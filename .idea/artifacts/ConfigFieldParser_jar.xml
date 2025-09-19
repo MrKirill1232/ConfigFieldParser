@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" build-on-make="true" name="ConfigFieldParser:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/ConfigFieldParser_jar</output-path>
+    <root id="archive" name="ConfigFieldParser.jar">
+      <element id="module-output" name="ConfigFieldParser" />
+    </root>
+  </artifact>
+</component>
