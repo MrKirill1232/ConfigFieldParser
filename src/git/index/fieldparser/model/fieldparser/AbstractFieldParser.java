@@ -30,10 +30,17 @@ import git.index.fieldparser.annotations.FieldParser;
 import git.index.fieldparser.interfaces.IFieldParser;
 import git.index.fieldparser.model.FieldClassRef;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public abstract class AbstractFieldParser
@@ -41,15 +48,18 @@ public abstract class AbstractFieldParser
     protected final LoggerImpl _logger;
 
     protected final Object _instanceOfFieldParser;
+    protected final boolean _accessIntoPrivate;
 
     protected final Map<String, FieldHolder> _fieldMap;
-    protected final Map<String, Method> _methodMap;
+    protected final Map<String, MethodHolder> _methodMap;
 
-    protected AbstractFieldParser(Object instanceOfFieldParser)
+    protected AbstractFieldParser(Object instanceOfFieldParser, boolean accessIntoPrivate)
     {
         _logger = new LoggerImpl(this.getClass());
 
         _instanceOfFieldParser = instanceOfFieldParser;
+        _accessIntoPrivate = accessIntoPrivate;
+
         _fieldMap = generateFieldList();
         _methodMap = generateMethodList();
     }
@@ -62,32 +72,87 @@ public abstract class AbstractFieldParser
         {
             if (
                     // cannot change final field
-                    (Modifier.isFinal(field.getModifiers())) ||
+                    (Modifier.isFinal(field.getModifiers()))
+            )
+            {
+                continue;
+            }
+            if ((!_accessIntoPrivate) &&
                     // cannot change non-visible fields
                     (Modifier.isPrivate(field.getModifiers()) || Modifier.isProtected(field.getModifiers())))
             {
                 continue;
             }
-            FieldHolder fieldHolder = new FieldHolder(field);
-            fieldMap.put(field.getName(), fieldHolder);
+            try
+            {
+                MethodHandles.Lookup lookupFieldVar = MethodHandles.lookup();
+                MethodHandles.Lookup privateLookupFieldVar = MethodHandles.privateLookupIn(_instanceOfFieldParser.getClass(), lookupFieldVar);
+                VarHandle fieldVarHandle = privateLookupFieldVar.unreflectVarHandle(field);
+
+                Object defaultValue;
+                try
+                {
+                    if (Modifier.isStatic(field.getModifiers()))
+                    {
+                        defaultValue = fieldVarHandle.get();
+                    }
+                    else
+                    {
+                        defaultValue = fieldVarHandle.get(_instanceOfFieldParser);
+                    }
+                }
+                catch (Throwable t)
+                {
+                    defaultValue = null;
+                }
+
+                FieldHolder fieldHolder = new FieldHolder(field, fieldVarHandle, defaultValue);
+                fieldMap.put(field.getName(), fieldHolder);
+            }
+            catch (Exception e)
+            {
+                _logger.error("Cannot get access to field " + ("[" + field.getName() + "]") + ". Is accessing into private fields - " + ("[" + (_accessIntoPrivate ? "YES" : "NO") + "]") + ".", e);
+            }
         }
         return fieldMap;
     }
 
-    protected Map<String, Method> generateMethodList()
+    protected Map<String, MethodHolder> generateMethodList()
     {
         Method[] methodArray = _instanceOfFieldParser.getClass().getDeclaredMethods();
-        Map<String, Method> methodMap = new HashMap<>(methodArray.length);
+        Map<String, MethodHolder> methodMap = new HashMap<>(methodArray.length);
         for (Method method : methodArray)
         {
-            if (
-                    // cannot change non-visible fields
-                    (Modifier.isPrivate(method.getModifiers()) || Modifier.isProtected(method.getModifiers()))
-            )
+            if ((!_accessIntoPrivate) &&
+                    // cannot invoke non-visible methods
+                    (Modifier.isPrivate(method.getModifiers()) || Modifier.isProtected(method.getModifiers())))
             {
                 continue;
             }
-            methodMap.put(method.getName(), method);
+            try
+            {
+                MethodHandles.Lookup lookupFieldVar = MethodHandles.lookup();
+                MethodHandles.Lookup privateLookup = MethodHandles.privateLookupIn(_instanceOfFieldParser.getClass(), lookupFieldVar);
+                MethodType methodType = MethodType.methodType(method.getReturnType(), method.getParameterTypes());
+
+                MethodHandle methodHandle;
+
+                if (Modifier.isStatic(method.getModifiers()))
+                {
+                    methodHandle = privateLookup.findStatic(_instanceOfFieldParser.getClass(), method.getName(), methodType);
+                }
+                else
+                {
+                    methodHandle = privateLookup.findVirtual(_instanceOfFieldParser.getClass(), method.getName(), methodType);
+                    methodHandle = methodHandle.bindTo(_instanceOfFieldParser);
+                }
+                MethodHolder methodHolder = new MethodHolder(method, methodHandle);
+                methodMap.put(method.getName(), methodHolder);
+            }
+            catch (Exception e)
+            {
+                _logger.error("Cannot get access to method " + ("[" + method.getName() + "]") + ". Is accessing into private fields - " + ("[" + (_accessIntoPrivate ? "YES" : "NO") + "]") + ".", e);
+            }
         }
         return methodMap;
     }
@@ -119,42 +184,51 @@ public abstract class AbstractFieldParser
     protected boolean setValueByMethod(FieldHolder fieldHolder)
     {
         String parseFieldMethodName = getMethodNameForAssignationField(fieldHolder.getField());
-        Method method = _methodMap.getOrDefault(parseFieldMethodName, null);
-        if (method == null)
+        MethodHolder methodHolder = _methodMap.getOrDefault(parseFieldMethodName, null);
+        if (methodHolder == null)
         {
             return false;
         }
-        String rawStringFieldValue = getRawFieldValue(fieldHolder.getField().getName());
-        Object[] arguments;
-        if (method.getParameterCount() == 0)
+        List<Object> arguments = overrideMethodArguments(fieldHolder, methodHolder);
+        if (arguments == null)
         {
-            arguments = new Object[0];
+            return false;
         }
-        else if (method.getParameterCount() == 1)
+        try
         {
-            arguments = new Object[] { rawStringFieldValue };
+            methodHolder.getMethodHandle().invokeWithArguments(arguments);
+        }
+        catch (Throwable t)
+        {
+            _logger.error("Cannot invoke method " + ("[" + parseFieldMethodName + "]") + ". Reason - ", t);
+            return false;
+        }
+        return true;
+    }
+
+    protected List<Object> overrideMethodArguments(FieldHolder fieldHolder, MethodHolder methodHolder)
+    {
+        if ((methodHolder == null) || (methodHolder.getMethod() == null))
+        {
+            _logger.error("Cannot use a method " + ("[" + getMethodNameForAssignationField(fieldHolder.getField()) + "]") + ". Reason - cannot find method, which declared in field.");
+            return null;
+        }
+        List<Object> arguments = new ArrayList<>(methodHolder.getMethod().getParameterCount());
+        if (methodHolder.getMethod().getParameterCount() == 0)
+        {
+            arguments = Collections.emptyList();
+        }
+        else if (methodHolder.getMethod().getParameterCount() == 1)
+        {
+            String rawStringFieldValue = getRawFieldValue(fieldHolder.getField().getName());
+            arguments.add(rawStringFieldValue);
         }
         else
         {
-            _logger.error("Cannot use a method " + ("[" + parseFieldMethodName + "]") + ". Reason - cannot handle more than 1 arguments in method invocation.");
-            return false;
+            _logger.error("Cannot use a method " + ("[" + getMethodNameForAssignationField(fieldHolder.getField()) + "]") + ". Reason - cannot handle more than 1 arguments in method invocation.");
+            return null;
         }
-        boolean originalAccessing = method.isAccessible();
-        try
-        {
-            method.setAccessible(true);
-            method.invoke(_instanceOfFieldParser, arguments);
-            return true;
-        }
-        catch (Exception e)
-        {
-            _logger.error("Cannot invoke method " + ("[" + parseFieldMethodName + "]") + ". Reason - ", e);
-            return false;
-        }
-        finally
-        {
-            method.setAccessible(originalAccessing);
-        }
+        return arguments;
     }
 
     protected boolean setValueIntoField(FieldHolder fieldHolder)
@@ -174,21 +248,22 @@ public abstract class AbstractFieldParser
             _logger.error("Cannot parse a field " + ("[" + fieldHolder.getField().getName() + "]") + " because 'FieldParser' by " + (fieldParser.getClass().getSimpleName()) + " drop a 'null' value, when field is a primitive value. Using a default value - " + ("[" + defaultValue + "]") + ".");
             return false;
         }
-        boolean originalAccessing = fieldHolder.getField().isAccessible();
         try
         {
-            fieldHolder.getField().setAccessible(true);
-            fieldHolder.getField().set(_instanceOfFieldParser, parsedValue);
+            if (Modifier.isStatic(fieldHolder.getField().getModifiers()))
+            {
+                fieldHolder.getFieldVarHandle().set(parsedValue);
+            }
+            else
+            {
+                fieldHolder.getFieldVarHandle().set(_instanceOfFieldParser, parsedValue);
+            }
             return true;
         }
         catch (Exception e)
         {
             _logger.error("Cannot set value " + ("[" + String.valueOf(parsedValue) + "]") + " for field " + ("[" + fieldHolder.getField().getName() + "]") + ". Using a default value - " + ("[" + defaultValue + "]") + ". Reason - ", e);
             return false;
-        }
-        finally
-        {
-            fieldHolder.getField().setAccessible(originalAccessing);
         }
     }
 
@@ -264,21 +339,16 @@ public abstract class AbstractFieldParser
         }
 
         private final Field _field;
+        private final VarHandle _fieldVarHandle;
         private byte _mask;
 
-        private Object _fieldValue;
+        private final Object _fieldValue;
 
-        private FieldHolder(Field field)
+        private FieldHolder(Field field, VarHandle fieldVarHandle, Object defaultValue)
         {
             _field = field;
-            try
-            {
-                _fieldValue = field.get(Object.class);
-            }
-            catch (IllegalAccessException e)
-            {
-                _fieldValue = null;
-            }
+            _fieldVarHandle = fieldVarHandle;
+            _fieldValue = defaultValue;
             if (_field.getAnnotation(ImmutableVariable.class) != null)
             {
                 _mask = (byte) (_mask | (1 << FieldHolder.FieldMaskType.IMMUTABLE.ordinal()));
@@ -288,6 +358,11 @@ public abstract class AbstractFieldParser
         public Field getField()
         {
             return _field;
+        }
+
+        public VarHandle getFieldVarHandle()
+        {
+            return _fieldVarHandle;
         }
 
         public Object getFieldValue()
@@ -319,6 +394,28 @@ public abstract class AbstractFieldParser
             {
                 _mask = (byte) (_mask & ~(1 << FieldHolder.FieldMaskType.PARSED_ONCE.ordinal()));
             }
+        }
+    }
+
+    protected final static class MethodHolder
+    {
+        private final Method _method;
+        private final MethodHandle _methodHandle;
+
+        private MethodHolder(Method method, MethodHandle methodHandle)
+        {
+            _method = method;
+            _methodHandle = methodHandle;
+        }
+
+        public Method getMethod()
+        {
+            return _method;
+        }
+
+        public MethodHandle getMethodHandle()
+        {
+            return _methodHandle;
         }
     }
 }

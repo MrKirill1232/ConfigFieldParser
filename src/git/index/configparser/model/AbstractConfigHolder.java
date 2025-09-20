@@ -64,16 +64,16 @@ public abstract class AbstractConfigHolder<H>
     private final H _configInstance;
     private final ConfigFieldParser _configParser;
 
-    protected AbstractConfigHolder(boolean parseFieldOneByOne)
+    protected AbstractConfigHolder(boolean parseFieldOneByOne, boolean accessIntoPrivate)
     {
         _logger = new LoggerImpl(this.getClass());
         _configInstance = createANewInstance();
-        _configParser = new ConfigFieldParser(getInstanceOfConfig(), parseFieldOneByOne);
+        _configParser = new ConfigFieldParser(getInstanceOfConfig(), parseFieldOneByOne, accessIntoPrivate);
     }
 
     protected AbstractConfigHolder()
     {
-        this(true);
+        this(true, true);
     }
 
     public void load()

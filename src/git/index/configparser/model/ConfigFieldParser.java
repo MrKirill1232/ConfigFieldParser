@@ -30,10 +30,11 @@ import git.index.fieldparser.model.attributes.FieldAttributes;
 import git.index.fieldparser.model.fieldparser.AbstractFieldParser;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -48,9 +49,9 @@ public class ConfigFieldParser extends AbstractFieldParser
     private int _lastFieldCollectionCount;
     private int _lastSuccessParsedFields;
 
-    public ConfigFieldParser(Object configInstance, boolean linked)
+    public ConfigFieldParser(Object configInstance, boolean accessIntoPrivate, boolean linked)
     {
-        super(configInstance);
+        super(configInstance, accessIntoPrivate);
         _linked = linked;
     }
 
@@ -174,56 +175,45 @@ public class ConfigFieldParser extends AbstractFieldParser
     }
 
     @Override
-    protected boolean setValueByMethod(FieldHolder fieldHolder)
+    protected List<Object> overrideMethodArguments(FieldHolder fieldHolder, MethodHolder methodHolder)
     {
         ConfigFieldHolder configFieldHolder = _configValues.getOrDefault(fieldHolder.getField().getName(), null);
         if (configFieldHolder == null)
         {
-            return false;
+            _logger.error("Cannot use a method " + ("[" + getMethodNameForAssignationField(fieldHolder.getField()) + "]") + ". Reason - cannot find field, which call a method assignation.");
+            return null;
         }
-        Method method = _methodMap.getOrDefault(configFieldHolder.getSetParameterMethod(), null);
-        if (method == null)
+        if ((methodHolder == null) || (methodHolder.getMethod() == null))
         {
-            return false;
+            _logger.error("Cannot use a method " + ("[" + getMethodNameForAssignationField(fieldHolder.getField()) + "]") + ". Reason - cannot find method, which declared in field.");
+            return null;
         }
-        Object[] arguments;
-        if (method.getParameterCount() == 0)
+        List<Object> arguments = new ArrayList<>(methodHolder.getMethod().getParameterCount());
+        if (methodHolder.getMethod().getParameterCount() == 0)
         {
-            arguments = new Object[0];
+            arguments = Collections.emptyList();
         }
-        else if (method.getParameterCount() == 1)
+        else if (methodHolder.getMethod().getParameterCount() == 1)
         {
-            arguments = new Object[] { configFieldHolder.getConfigFieldValue() };
+            arguments.add(configFieldHolder.getConfigFieldValue());
         }
-        else if (method.getParameterCount() == 2)
+        else if (methodHolder.getMethod().getParameterCount() == 2)
         {
-            arguments = new Object[] { configFieldHolder.getConfigFieldName(), configFieldHolder.getConfigFieldValue() };
+            arguments.add(configFieldHolder.getConfigFieldName());
+            arguments.add(configFieldHolder.getConfigFieldValue());
         }
-        else if (method.getParameterCount() == 3)
+        else if (methodHolder.getMethod().getParameterCount() == 3)
         {
-            arguments = new Object[] { configFieldHolder.getConfigFieldName(), configFieldHolder.getConfigFieldValue(), _configParser };
+            arguments.add(configFieldHolder.getConfigFieldName());
+            arguments.add(configFieldHolder.getConfigFieldValue());
+            arguments.add(_configParser);
         }
         else
         {
-            _logger.error("Cannot use a method " + ("[" + configFieldHolder.getSetParameterMethod() + "]") + ". Reason - cannot handle more than 1 arguments in method invocation.");
-            return false;
+            _logger.error("Cannot use a method " + ("[" + getMethodNameForAssignationField(fieldHolder.getField()) + "]") + ". Reason - cannot handle more than 1 arguments in method invocation.");
+            return null;
         }
-        boolean originalAccessing = method.isAccessible();
-        try
-        {
-            method.setAccessible(true);
-            method.invoke(_instanceOfFieldParser, arguments);
-            return true;
-        }
-        catch (Exception e)
-        {
-            _logger.error("Cannot invoke method " + ("[" + configFieldHolder.getSetParameterMethod() + "]") + ". Reason - ", e);
-            return false;
-        }
-        finally
-        {
-            method.setAccessible(originalAccessing);
-        }
+        return arguments;
     }
 
     @Override
@@ -293,35 +283,35 @@ public class ConfigFieldParser extends AbstractFieldParser
 
     protected void tryToBumpOnStartLoadMethod()
     {
-        Method onStartLoadMethod = _methodMap.getOrDefault("onStartLoad", null);
+        MethodHolder onStartLoadMethod = _methodMap.getOrDefault("onStartLoad", null);
         if (onStartLoadMethod == null)
         {
             return;
         }
         try
         {
-            onStartLoadMethod.invoke(_instanceOfFieldParser);
+            onStartLoadMethod.getMethodHandle().invokeWithArguments(Collections.emptyList());
         }
-        catch (IllegalAccessException | InvocationTargetException e)
+        catch (Throwable t)
         {
-            _logger.error("Cannot invoke 'onStartLoad' method.", e);
+            _logger.error("Cannot invoke 'onStartLoad' method.", t);
         }
     }
 
     protected void tryToBumpOnEndLoadMethod()
     {
-        Method onStartLoadMethod = _methodMap.getOrDefault("onEndLoad", null);
-        if (onStartLoadMethod == null)
+        MethodHolder onEndLoadMethod = _methodMap.getOrDefault("onEndLoad", null);
+        if (onEndLoadMethod == null)
         {
             return;
         }
         try
         {
-            onStartLoadMethod.invoke(_instanceOfFieldParser);
+            onEndLoadMethod.getMethodHandle().invokeWithArguments(Collections.emptyList());
         }
-        catch (IllegalAccessException | InvocationTargetException e)
+        catch (Throwable t)
         {
-            _logger.error("Cannot invoke 'onEndLoad' method.", e);
+            _logger.error("Cannot invoke 'onEndLoad' method.", t);
         }
     }
 

@@ -25,10 +25,8 @@ package git.index.configparser.model;
 
 import git.index.dummylogger.LoggerImpl;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.InputStreamReader;
 import java.io.LineNumberReader;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
