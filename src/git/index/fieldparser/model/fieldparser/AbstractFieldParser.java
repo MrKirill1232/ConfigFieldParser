@@ -76,7 +76,7 @@ public abstract class AbstractFieldParser
 
     protected Map<String, Method> generateMethodList()
     {
-        Method[] methodArray = _instanceOfFieldParser.getClass().getMethods();
+        Method[] methodArray = _instanceOfFieldParser.getClass().getDeclaredMethods();
         Map<String, Method> methodMap = new HashMap<>(methodArray.length);
         for (Method method : methodArray)
         {
