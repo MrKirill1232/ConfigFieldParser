@@ -242,6 +242,21 @@ public class ConfigFieldParser extends AbstractFieldParser
     }
 
     @Override
+    protected String getMethodNameForAssignationField(Field field)
+    {
+        if (field == null)
+        {
+            return "";
+        }
+        ConfigFieldHolder configFieldHolder = _configValues.getOrDefault(field.getName(), null);
+        if (configFieldHolder == null)
+        {
+            return "";
+        }
+        return configFieldHolder.getSetParameterMethod();
+    }
+
+    @Override
     protected FieldClassRef<Object> overrideClassRef(Field field, Object defaultFieldValue)
     {
         if (field == null)
